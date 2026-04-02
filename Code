@@ -1,0 +1,152 @@
+{
+  "name": "Project 2 - Auto Mail from Google Sheet",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 1 }] }
+      },
+      "id": "p2-001",
+      "name": "Trigger Hourly",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [60, 300]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "documentId": { "__rl": true, "value": "YOUR_SHEET_ID", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Sheet1", "mode": "name" },
+        "filtersUI": { "values": [{ "lookupColumn": "Email_Status", "lookupValue": "Pending" }] },
+        "options": { "returnFirstMatch": true }
+      },
+      "id": "p2-002",
+      "name": "Read Next Pending Email",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            { "id": "c1", "leftValue": "={{ $json.Email_Address }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty" } },
+            { "id": "c2", "leftValue": "={{ $json.Buyer_Name }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty" } }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "p2-003",
+      "name": "Has Email and Name?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = $input.item.json;\nconst prompt = 'Write a professional B2B export outreach email. Keep it SHORT (150 words max). Personalized and genuine tone. No generic sales pitch.\\n\\nDetails:\\n- Recipient Name: ' + (row.Buyer_Name || 'Sir/Madam') + '\\n- Their Company: ' + (row.Company_Name || '') + '\\n- Their Country: ' + (row.Country || '') + '\\n- Their Product Interest: ' + (row.Product_Interest || 'your products') + '\\n- Your Company: YOUR_COMPANY_NAME\\n- Your Export Product: YOUR_PRODUCT\\n- Your Name: YOUR_FROM_NAME\\n\\nReturn ONLY a JSON object like this (no explanation):\\n{\"subject\": \"email subject here\", \"body\": \"full email body here with proper greeting and signature\"}';\n\nreturn { ...row, ai_prompt: prompt };"
+      },
+      "id": "p2-004",
+      "name": "Build AI Email Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_GROQ_KEY" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: [{ role: 'user', content: $json.ai_prompt }], max_tokens: 800, temperature: 0.7 }) }}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "p2-005",
+      "name": "AI Generate Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const aiResp = $input.item.json;\nconst row = $('Read Next Pending Email').item.json;\n\nlet subject = '';\nlet body = '';\n\ntry {\n  const raw = aiResp.choices[0].message.content || '';\n  const clean = raw.replace(/```json/gi,'').replace(/```/g,'').trim();\n  const parsed = JSON.parse(clean);\n  subject = parsed.subject || 'Export Inquiry - ' + row.Company_Name;\n  body = parsed.body || raw;\n} catch(e) {\n  subject = 'Export Inquiry - ' + (row.Company_Name || 'Your Company');\n  body = aiResp.choices && aiResp.choices[0] ? aiResp.choices[0].message.content : 'Please find our product details attached.';\n}\n\nreturn {\n  row_number: row.Row_Number,\n  to_email: row.Email_Address,\n  buyer_name: row.Buyer_Name,\n  company_name: row.Company_Name,\n  email_subject: subject,\n  email_body: body\n};"
+      },
+      "id": "p2-006",
+      "name": "Parse AI Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1060, 300]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.to_email }}",
+        "subject": "={{ $json.email_subject }}",
+        "emailType": "text",
+        "message": "={{ $json.email_body }}",
+        "options": {
+          "ccList": "",
+          "replyTo": "YOUR_REPLY_EMAIL"
+        }
+      },
+      "id": "p2-007",
+      "name": "Send Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1260, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": { "__rl": true, "value": "YOUR_SHEET_ID", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Sheet1", "mode": "name" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Email_Status": "Sent",
+            "Email_Subject": "={{ $('Parse AI Email').item.json.email_subject }}",
+            "Sent_At": "={{ new Date().toISOString() }}",
+            "Notes": "Email sent successfully",
+            "Row_Number": "={{ $('Parse AI Email').item.json.row_number }}"
+          },
+          "matchingColumns": ["Row_Number"]
+        }
+      },
+      "id": "p2-008",
+      "name": "Mark Sent in Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [1460, 300]
+    },
+    {
+      "parameters": {
+        "amount": 30,
+        "unit": "seconds"
+      },
+      "id": "p2-009",
+      "name": "Wait 30 Seconds",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1460, 480],
+      "notes": "Delay between emails to avoid spam flags"
+    }
+  ],
+  "connections": {
+    "Trigger Hourly": { "main": [[{ "node": "Read Next Pending Email", "type": "main", "index": 0 }]] },
+    "Read Next Pending Email": { "main": [[{ "node": "Has Email and Name?", "type": "main", "index": 0 }]] },
+    "Has Email and Name?": { "main": [[{ "node": "Build AI Email Prompt", "type": "main", "index": 0 }], []] },
+    "Build AI Email Prompt": { "main": [[{ "node": "AI Generate Email", "type": "main", "index": 0 }]] },
+    "AI Generate Email": { "main": [[{ "node": "Parse AI Email", "type": "main", "index": 0 }]] },
+    "Parse AI Email": { "main": [[{ "node": "Send Gmail", "type": "main", "index": 0 }]] },
+    "Send Gmail": { "main": [[{ "node": "Mark Sent in Sheet", "type": "main", "index": 0 }]] },
+    "Mark Sent in Sheet": { "main": [[{ "node": "Wait 30 Seconds", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "timezone": "Asia/Kolkata" },
+  "tags": ["Auto Mail", "Gmail", "Google Sheets", "AI Email"],
+  "pinData": {}, "staticData": null, "versionId": "1"
+}
